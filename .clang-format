@@ -1,0 +1,151 @@
+# suitable for clang-format-5
+
+---
+#BasedOnStyle: Microsoft # not applicable to clang-format-5 (version >=9 required)
+BasedOnStyle: Webkit
+---
+# Language C++98
+Language: Cpp
+Standard: Cpp03
+Cpp11BracedListStyle: true
+
+# Indentation of 4 spaces, do not use hard tabs, access modifiers
+# in front
+IndentWidth: 4
+UseTab: Never
+AccessModifierOffset: -4
+
+# Line break limit in characters
+ColumnLimit: 120
+
+# Open and closing brackets on separate line, except for
+# - namespaces
+# - empty functions
+# - empty structures
+# Also, no indentation in namespaces
+#
+#
+# namespace BSS {
+# namespace TSK {
+#
+# class A
+# {
+# public:
+#     A();
+#     virtual ~A() {}
+# };
+#
+# void function()
+# {
+#     if (condition)
+#     {
+#         // ...
+#     }
+#     else
+#     {
+#         // ...
+#     }
+# }
+# }
+# }
+#
+NamespaceIndentation: None
+BreakBeforeBraces: Custom
+BraceWrapping:
+# AfterCaseLabel:        true
+  AfterClass:            true
+  AfterControlStatement: true
+  AfterEnum:             true
+  AfterFunction:         true
+  AfterNamespace:        false
+  AfterObjCDeclaration:  true
+  AfterStruct:           true
+  AfterUnion:            true
+  AfterExternBlock:      true
+  BeforeCatch:           true
+  BeforeElse:            true
+  IndentBraces:          false
+  SplitEmptyFunction:    false
+  SplitEmptyRecord:      false
+  SplitEmptyNamespace:   false
+
+# Arrange initialization lists of constructors like lists:
+#
+# Constructor::Constructor()
+#     : m_member1()
+#     , m_member2()
+#     , m_member3()
+#     , m_member4()
+# {
+# }
+#
+BreakConstructorInitializers: BeforeComma
+
+# Space between keywords and opening parenthesis,
+# no space between function names and opening parentheis
+#
+# for (int i = 0; i < 10; ++i)
+# {
+#     if (condiition)
+#     {
+#         m_member->foo();
+#     }
+#     else
+#     {
+#         try
+#         {
+#             m_member->bar();
+#         }
+#         catch (std::exception& e)
+#         {
+#             std::cout << e.what() << '\n';
+#         }
+#     }
+# }
+SpaceBeforeParens: ControlStatements
+
+# Pointer and reference with the variable:
+#
+# int *p;
+# const std::vector<int> &v;
+PointerAlignment: Right
+
+# Do not sort header includes
+SortIncludes: false
+
+# Allows short inlined functions on one line. This also
+# applies for free functions.
+#
+# void function() {}
+#
+# class Foo
+# {
+# public:
+#     virtual void something() {}
+#     size_t getLength() const { return m_length; }
+# };
+#
+AllowShortFunctionsOnASingleLine: Inline
+
+# OMITTED: NOT POSSIBLE IN clang-format-5
+#
+# Indentation of nested preprocessor directives
+#
+# #if defined(__linux__)
+#     #include <unistd.h>
+# #endif
+#
+#IndentPPDirectives: BeforeHash # not applicable to clang-format-5 (version >=6 required)
+
+# List parameters of function declarations and definitions on one line
+# if they fit, or list them as table if they don't fit on one line.
+#
+# int function(int a, int b, int c);
+#
+# int function_many_params(const std::string& name,
+#                          const std::string& email,
+#                          const std::string& address,
+#                          int age);
+#
+BinPackParameters: false
+---
