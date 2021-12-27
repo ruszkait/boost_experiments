@@ -163,62 +163,143 @@ TEST(SignalTest, UnsubscribeInEmission)
 class PostEmissionSafeConnection : public boost::signals2::scoped_connection
 {
 public:
-    class HandlerTrace
+    template <typename TSignal, typename THandler>
+    PostEmissionSafeConnection(TSignal& signal, const THandler& handler)
+        : counter_(std::make_unique<TraceCounter>())
     {
-    public:
+        auto trackedHandler = [handlerTrace = IssueTrace(), handler] { handler(); };
+        operator=(signal.connect(std::move(trackedHandler)));
+    }
+
+    PostEmissionSafeConnection(const PostEmissionSafeConnection &) = delete;
+    PostEmissionSafeConnection &operator=(const PostEmissionSafeConnection &) = delete;
+
+    PostEmissionSafeConnection(PostEmissionSafeConnection &&other)
+        : boost::signals2::scoped_connection::scoped_connection(std::move(other))
+        , counter_(std::move(other.counter_))
+    { }
+
+    PostEmissionSafeConnection &operator=(PostEmissionSafeConnection &&other)
+    {
+        boost::signals2::scoped_connection::operator=(std::move(other));
+        counter_ = std::move(other.counter_);
+
+        // FIXME: If there was an existing connection in this class, then that has to be disconnected properly.
+        return *this;
+    }
+
+    ~PostEmissionSafeConnection()
+    {
+        if (counter_)
+        {
+            disconnect();
+            counter_->WaitForLastHandlerTrace();
+        }
+    }
+
+private:
+    struct TraceCounter
+    {
+        void Register()
+        {
+            auto currentTraceCount = traceCount_.load();
+            for (;;)
+            {
+                auto incrementedTraceCount = currentTraceCount + 1;
+
+                const bool exchanged = traceCount_.compare_exchange_strong(
+                    currentTraceCount, incrementedTraceCount, std::memory_order_release, std::memory_order_relaxed);
+
+                if (exchanged)
+                    break;
+            }
+        }
+
+        void UnRegister()
+        {
+            auto currentTraceCount = traceCount_.load();
+            assert(currentTraceCount > 0);
+            for (;;)
+            {
+                auto decrementedTraceCount = currentTraceCount - 1;
+
+                const bool exchanged = traceCount_.compare_exchange_strong(
+                    currentTraceCount, decrementedTraceCount, std::memory_order_release, std::memory_order_relaxed);
+
+                if (exchanged)
+                    break;
+            }
+        }
+
+        void WaitForLastHandlerTrace()
+        {
+            for (;;)
+            {
+                auto currentTraceCount = traceCount_.load();
+
+                if (currentTraceCount == 0)
+                    break;
+
+                using namespace std::literals;
+                std::this_thread::sleep_for(1ms);
+            }
+        }
+
+        std::atomic<std::size_t> traceCount_ = 0;
+    };
+
+    struct HandlerTrace
+    {
         HandlerTrace()
-            : connection_(nullptr)
+            : counter_(nullptr)
         { }
 
-        HandlerTrace(PostEmissionSafeConnection &connection)
-            : connection_(&connection)
+        HandlerTrace(TraceCounter &counter)
+            : counter_(&counter)
         {
-            connection_->Register();
+            counter_->Register();
         }
 
         HandlerTrace(const HandlerTrace &other)
-            : connection_(other.connection_)
+            : counter_(other.counter_)
         {
-            connection_->Register();
+            counter_->Register();
         }
 
         HandlerTrace &operator=(const HandlerTrace &other)
         {
-            connection_ = other.connection_;
-            connection_->Register();
+            counter_ = other.counter_;
+            counter_->Register();
             return *this;
         }
 
         HandlerTrace(HandlerTrace &&other)
-            : connection_(other.connection_)
+            : counter_(other.counter_)
         {
-            other.connection_ = nullptr;
+            other.counter_ = nullptr;
         }
 
         HandlerTrace &operator=(HandlerTrace &&other)
         {
-            connection_ = other.connection_;
-            other.connection_ = nullptr;
+            counter_ = other.counter_;
+            other.counter_ = nullptr;
             return *this;
         }
 
         ~HandlerTrace()
         {
-            if (connection_)
-                connection_->UnRegister();
+            if (counter_)
+                counter_->UnRegister();
         }
 
-    private:
-        PostEmissionSafeConnection *connection_ = nullptr;
+        TraceCounter *counter_ = nullptr;
     };
 
-    PostEmissionSafeConnection() { Register(); }
+    HandlerTrace IssueTrace() { return HandlerTrace(*(counter_.get())); }
 
     PostEmissionSafeConnection(const boost::signals2::connection &connection)
         : boost::signals2::scoped_connection(connection)
-    {
-        Register();
-    }
+    { }
 
     PostEmissionSafeConnection &operator=(const boost::signals2::connection &connection)
     {
@@ -226,87 +307,37 @@ public:
         return *this;
     }
 
-    ~PostEmissionSafeConnection()
+    PostEmissionSafeConnection(boost::signals2::connection &&connection)
+        : boost::signals2::scoped_connection(std::move(connection))
+    { }
+
+    PostEmissionSafeConnection &operator=(boost::signals2::connection &&connection)
     {
-        UnRegister();
-        disconnect();
-        noMoreTraceFuture_.wait();
+        boost::signals2::scoped_connection::operator=(std::move(connection));
+        return *this;
     }
 
-    HandlerTrace IssueTrace() { return HandlerTrace(*this); }
-
-    std::shared_future<void> WHenNoMoreB() { return noMoreTraceFuture_; }
-
-private:
-    friend HandlerTrace;
-
-    void Register()
-    {
-        for (;;)
-        {
-            auto currentTraceCount = traceCount_.load();
-
-            auto incrementedTraceCount = currentTraceCount + 1;
-
-            const bool exchanged = traceCount_.compare_exchange_strong(
-                currentTraceCount, incrementedTraceCount, std::memory_order_release, std::memory_order_relaxed);
-
-            if (exchanged)
-                break;
-        }
-    }
-
-    void UnRegister()
-    {
-        for (;;)
-        {
-            auto currentTraceCount = traceCount_.load();
-            assert(currentTraceCount > 0);
-
-            auto decrementedTraceCount = currentTraceCount - 1;
-
-            const bool exchanged = traceCount_.compare_exchange_strong(
-                currentTraceCount, decrementedTraceCount, std::memory_order_release, std::memory_order_relaxed);
-
-            if (!exchanged)
-                continue;
-
-            const bool noMoreTrace = decrementedTraceCount == 0;
-
-            if (noMoreTrace)
-                noMoreTracePromise_.set_value();
-
-            break;
-        }
-    }
-
-    std::promise<void> noMoreTracePromise_;
-    std::shared_future<void> noMoreTraceFuture_ = noMoreTracePromise_.get_future().share();
-    std::atomic<std::size_t> traceCount_ = 0;
+    std::unique_ptr<TraceCounter> counter_;
 };
-
-// FIXME. because of the pointer the HandlerTrace, the connection is not copyable or movable
-template <typename TSignal, typename THandler>
-PostEmissionSafeConnection connect_signal(TSignal &signal, const THandler &handler)
-{
-    PostEmissionSafeConnection connection;
-    auto trackedHandler = [handlerTrace = connection.IssueTrace(), handler] { handler(); };
-    connection = signal.connect(trackedHandler);
-    return connection;
-}
 
 TEST(SignalTest, PostUnsubscriptionEmission)
 {
     // The handler must outlive all traces
     boost::signals2::signal<void()> signal;
 
-    PostEmissionSafeConnection connection;
-    connection = signal.connect([handlerTrace = connection.IssueTrace()] {
+    std::latch latch(2);
+    PostEmissionSafeConnection connection(signal, [&latch] {
+        latch.count_down();
         using namespace std::literals;
-        std::this_thread::sleep_for(1s);
+        std::this_thread::sleep_for(2s);
+        std::this_thread::sleep_for(2s);
     });
 
-    auto emissionDone = std::async([&signal] { signal(); });
+    std::thread signalSenderThread([&signal] { signal(); });
+    signalSenderThread.detach();
+
+    latch.arrive_and_wait();
+    connection.disconnect();
 
     // the connection blocks its destruction until all handler instances are destroyed.
 }
