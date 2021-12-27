@@ -1,18 +1,26 @@
 cmake_minimum_required(VERSION 3.1)
-project(boost_signal_experiments CXX)
+project(BoostTest CXX)
+
+# Get conan dependencies
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_BINARY_DIR})
+list(APPEND CMAKE_PREFIX_PATH ${CMAKE_BINARY_DIR})
+
+# To enable unittesting without need to do cmake install
+set( CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/out CACHE STRING "" )
+set( CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/out CACHE STRING "" )
+
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(boost COMPONENTS boost thread REQUIRED)
-find_package(boost COMPONENTS boost signal2 REQUIRED)
+find_package(Boost REQUIRED)
 find_package(Gtest)
 
 add_executable(${PROJECT_NAME})
 
 target_sources(${PROJECT_NAME}
 	PRIVATE
-		${CMAKE_CURRENT_SOURCE_DIR}/src/SubscriptionTest.cpp
+		${CMAKE_CURRENT_SOURCE_DIR}/src/SignalTest.cpp
 )
  
 target_compile_definitions(${PROJECT_NAME}

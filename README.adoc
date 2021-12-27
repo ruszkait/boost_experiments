@@ -1,5 +1,5 @@
 
-conan remote add conan-center https://center.conan.io
+conan remote add conancenter https://center.conan.io
 
 mkdir build && cd build
-conan install .. -pr=x86_64-windows-vs2019 -s build_type=Debug -r conan-center 
+conan install .. -pr=x86_64-windows-vs2019 -s build_type=Debug -r conancenter 
