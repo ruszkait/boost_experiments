@@ -164,11 +164,11 @@ class PostEmissionSafeConnection : public boost::signals2::scoped_connection
 {
 public:
     template <typename TSignal, typename THandler>
-    PostEmissionSafeConnection(TSignal& signal, const THandler& handler)
+    PostEmissionSafeConnection(TSignal &signal, const THandler &handler)
         : counter_(std::make_unique<TraceCounter>())
     {
-        auto trackedHandler = [handlerTrace = IssueTrace(), handler] { handler(); };
-        operator=(signal.connect(std::move(trackedHandler)));
+        auto trackedHandler = [handlerTrace = HandlerTrace(*(counter_.get())), handler] { handler(); };
+        boost::signals2::scoped_connection::operator=(signal.connect(std::move(trackedHandler)));
     }
 
     PostEmissionSafeConnection(const PostEmissionSafeConnection &) = delete;
@@ -181,28 +181,40 @@ public:
 
     PostEmissionSafeConnection &operator=(PostEmissionSafeConnection &&other)
     {
+        Release();
+
         boost::signals2::scoped_connection::operator=(std::move(other));
         counter_ = std::move(other.counter_);
 
-        // FIXME: If there was an existing connection in this class, then that has to be disconnected properly.
         return *this;
     }
 
-    ~PostEmissionSafeConnection()
-    {
-        if (counter_)
-        {
-            disconnect();
-            counter_->WaitForLastHandlerTrace();
-        }
-    }
+    ~PostEmissionSafeConnection() { Release(); }
 
 private:
+    // A shared counter, which tracks the living Trace instances
     struct TraceCounter
     {
-        void Register()
+        void RegisterCreation()
         {
             auto currentTraceCount = traceCount_.load();
+            assert(currentTraceCount == 0);
+            for (;;)
+            {
+                auto incrementedTraceCount = currentTraceCount + 1;
+
+                const bool exchanged = traceCount_.compare_exchange_strong(
+                    currentTraceCount, incrementedTraceCount, std::memory_order_release, std::memory_order_relaxed);
+
+                if (exchanged)
+                    break;
+            }
+        }
+
+        void RegisterCopy()
+        {
+            auto currentTraceCount = traceCount_.load();
+            assert(currentTraceCount > 0);
             for (;;)
             {
                 auto incrementedTraceCount = currentTraceCount + 1;
@@ -248,28 +260,27 @@ private:
         std::atomic<std::size_t> traceCount_ = 0;
     };
 
+    // RAII object captured in the handler, so that we can keep track of the living handlers
     struct HandlerTrace
     {
-        HandlerTrace()
-            : counter_(nullptr)
-        { }
+        HandlerTrace() = delete;
 
         HandlerTrace(TraceCounter &counter)
             : counter_(&counter)
         {
-            counter_->Register();
+            counter_->RegisterCreation();
         }
 
         HandlerTrace(const HandlerTrace &other)
             : counter_(other.counter_)
         {
-            counter_->Register();
+            counter_->RegisterCopy();
         }
 
         HandlerTrace &operator=(const HandlerTrace &other)
         {
             counter_ = other.counter_;
-            counter_->Register();
+            counter_->RegisterCopy();
             return *this;
         }
 
@@ -295,26 +306,14 @@ private:
         TraceCounter *counter_ = nullptr;
     };
 
-    HandlerTrace IssueTrace() { return HandlerTrace(*(counter_.get())); }
-
-    PostEmissionSafeConnection(const boost::signals2::connection &connection)
-        : boost::signals2::scoped_connection(connection)
-    { }
-
-    PostEmissionSafeConnection &operator=(const boost::signals2::connection &connection)
+    void Release()
     {
-        boost::signals2::scoped_connection::operator=(connection);
-        return *this;
-    }
+        if (!counter_)
+            return;
 
-    PostEmissionSafeConnection(boost::signals2::connection &&connection)
-        : boost::signals2::scoped_connection(std::move(connection))
-    { }
-
-    PostEmissionSafeConnection &operator=(boost::signals2::connection &&connection)
-    {
-        boost::signals2::scoped_connection::operator=(std::move(connection));
-        return *this;
+        disconnect();
+        counter_->WaitForLastHandlerTrace();
+        counter_.reset();
     }
 
     std::unique_ptr<TraceCounter> counter_;
