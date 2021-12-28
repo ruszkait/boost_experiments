@@ -193,12 +193,14 @@ public:
 
 private:
     // A shared counter, which tracks the living Trace instances
+    // NOTE: This object is on the heap. This pins down its address, so the Trace-es can refer to it via
+    // a C++ reference. The Connection can be moved, because that also refers to this fixed address counter.
     struct TraceCounter
     {
         void RegisterCreation()
         {
             auto currentTraceCount = traceCount_.load();
-            assert(currentTraceCount == 0);
+            assert(traceCount_ == 0);
             for (;;)
             {
                 auto incrementedTraceCount = currentTraceCount + 1;
