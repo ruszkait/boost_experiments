@@ -163,28 +163,25 @@ TEST(SignalTest, UnsubscribeInEmission)
 class PostEmissionSafeConnection : public boost::signals2::scoped_connection
 {
 public:
-    template <typename TSignal, typename THandler>
-    PostEmissionSafeConnection(TSignal &signal, const THandler &handler)
-        : counter_(std::make_unique<TraceCounter>())
+    template <typename TSignal, typename THandler> PostEmissionSafeConnection(TSignal &signal, const THandler &handler)
     {
-        auto trackedHandler = [handlerTrace = HandlerTrace(*(counter_.get())), handler] { handler(); };
+        std::shared_ptr<void> tracker(nullptr, [](auto) {});
+        tracker_ = tracker;
+        auto trackedHandler = [tracker = std::move(tracker), handler] { handler(); };
         boost::signals2::scoped_connection::operator=(signal.connect(std::move(trackedHandler)));
     }
 
     PostEmissionSafeConnection(const PostEmissionSafeConnection &) = delete;
     PostEmissionSafeConnection &operator=(const PostEmissionSafeConnection &) = delete;
 
-    PostEmissionSafeConnection(PostEmissionSafeConnection &&other)
-        : boost::signals2::scoped_connection::scoped_connection(std::move(other))
-        , counter_(std::move(other.counter_))
-    { }
+    PostEmissionSafeConnection(PostEmissionSafeConnection &&other) = default;
 
     PostEmissionSafeConnection &operator=(PostEmissionSafeConnection &&other)
     {
         Release();
 
         boost::signals2::scoped_connection::operator=(std::move(other));
-        counter_ = std::move(other.counter_);
+        tracker_ = std::move(other.tracker_);
 
         return *this;
     }
@@ -196,138 +193,20 @@ public:
     // The only thing is: this class blocks at the destructor until all handlers are released
 
 private:
-    // A shared counter, which tracks the living Trace instances
-    // NOTE: This object is on the heap. This pins down its address, so the Trace-es can refer to it via
-    // a C++ reference. The Connection can be moved, because that also refers to this fixed address counter.
-    struct TraceCounter
-    {
-        void RegisterCreation()
-        {
-            auto currentTraceCount = traceCount_.load();
-            assert(traceCount_ == 0);
-            for (;;)
-            {
-                auto incrementedTraceCount = currentTraceCount + 1;
-
-                const bool exchanged = traceCount_.compare_exchange_strong(
-                    currentTraceCount, incrementedTraceCount, std::memory_order_release, std::memory_order_relaxed);
-
-                if (exchanged)
-                    break;
-            }
-        }
-
-        void RegisterCopy()
-        {
-            auto currentTraceCount = traceCount_.load();
-            assert(currentTraceCount > 0);
-            for (;;)
-            {
-                auto incrementedTraceCount = currentTraceCount + 1;
-
-                const bool exchanged = traceCount_.compare_exchange_strong(
-                    currentTraceCount, incrementedTraceCount, std::memory_order_release, std::memory_order_relaxed);
-
-                if (exchanged)
-                    break;
-            }
-        }
-
-        void UnRegister()
-        {
-            auto currentTraceCount = traceCount_.load();
-            assert(currentTraceCount > 0);
-            for (;;)
-            {
-                auto decrementedTraceCount = currentTraceCount - 1;
-
-                const bool exchanged = traceCount_.compare_exchange_strong(
-                    currentTraceCount, decrementedTraceCount, std::memory_order_release, std::memory_order_relaxed);
-
-                if (exchanged)
-                    break;
-            }
-        }
-
-        void WaitForLastHandlerTrace()
-        {
-            for (;;)
-            {
-                auto currentTraceCount = traceCount_.load();
-
-                if (currentTraceCount == 0)
-                    break;
-
-                using namespace std::literals;
-                std::this_thread::sleep_for(1ms);
-            }
-        }
-
-        std::atomic<std::size_t> traceCount_ = 0;
-    };
-
-    // RAII object captured in the handler, so that we can keep track of the living handlers
-    struct HandlerTrace
-    {
-        HandlerTrace() = delete;
-
-        HandlerTrace(TraceCounter &counter)
-            : counter_(&counter)
-        {
-            counter_->RegisterCreation();
-        }
-
-        HandlerTrace(const HandlerTrace &other)
-            : counter_(other.counter_)
-        {
-            counter_->RegisterCopy();
-        }
-
-        HandlerTrace &operator=(const HandlerTrace &other)
-        {
-            counter_ = other.counter_;
-            counter_->RegisterCopy();
-            return *this;
-        }
-
-        HandlerTrace(HandlerTrace &&other)
-            : counter_(other.counter_)
-        {
-            other.counter_ = nullptr;
-        }
-
-        HandlerTrace &operator=(HandlerTrace &&other)
-        {
-            counter_ = other.counter_;
-            other.counter_ = nullptr;
-            return *this;
-        }
-
-        ~HandlerTrace()
-        {
-            if (counter_)
-                counter_->UnRegister();
-        }
-
-        TraceCounter *counter_ = nullptr;
-    };
-
     void Release()
     {
-        if (!counter_)
-            return;
-
-        disconnect();
-        counter_->WaitForLastHandlerTrace();
-        counter_.reset();
+        while (!tracker_.expired())
+        {
+            using namespace std::literals;
+            std::this_thread::sleep_for(1ms);
+        }
     }
 
-    std::unique_ptr<TraceCounter> counter_;
+    std::weak_ptr<void> tracker_;
 };
 
 TEST(SignalTest, PostUnsubscriptionEmission)
 {
-    // The handler must outlive all traces
     boost::signals2::signal<void()> signal;
 
     std::latch latch(2);
