@@ -163,13 +163,10 @@ TEST(SignalTest, UnsubscribeInEmission)
 class PostEmissionSafeConnection : public boost::signals2::scoped_connection
 {
 public:
-    template <typename TSignal, typename THandler> PostEmissionSafeConnection(TSignal &signal, const THandler &handler)
-    {
-        std::shared_ptr<void> tracker(nullptr, [](auto) {});
-        tracker_ = tracker;
-        auto trackedHandler = [tracker = std::move(tracker), handler] { handler(); };
-        boost::signals2::scoped_connection::operator=(signal.connect(std::move(trackedHandler)));
-    }
+    PostEmissionSafeConnection(std::weak_ptr<void> tracker, boost::signals2::connection connection)
+        : boost::signals2::scoped_connection(connection)
+        , tracker_(tracker)
+    { }
 
     PostEmissionSafeConnection(const PostEmissionSafeConnection &) = delete;
     PostEmissionSafeConnection &operator=(const PostEmissionSafeConnection &) = delete;
@@ -205,23 +202,53 @@ private:
     std::weak_ptr<void> tracker_;
 };
 
+class BatteryController
+{
+public:
+    boost::signals2::scoped_connection OnBatteryLow(const std::function<void()> &handler)
+    {
+        auto connection = batteryLowSignal_.connect(handler);
+        return connection;
+    }
+
+    PostEmissionSafeConnection OnBatteryLowSafe(const std::function<void()> &handler)
+    {
+        std::shared_ptr<void> tracker(nullptr, [](auto) {});
+        auto trackedHandler = [tracker, handler] { handler(); };
+        auto connection = batteryLowSignal_.connect(std::move(trackedHandler));
+        PostEmissionSafeConnection safeConnection(tracker, connection);
+        return safeConnection;
+    }
+
+    void NotifyBatteryLow()
+    {
+        batteryLowSignal_();
+    }
+
+private:
+    boost::signals2::signal<void()> batteryLowSignal_;
+};
+
 TEST(SignalTest, PostUnsubscriptionEmission)
 {
-    boost::signals2::signal<void()> signal;
+    BatteryController batteryController;
 
     std::latch latch(2);
-    PostEmissionSafeConnection connection(signal, [&latch] {
+    PostEmissionSafeConnection connection = batteryController.OnBatteryLowSafe([&latch] {
         latch.count_down();
         using namespace std::literals;
         std::this_thread::sleep_for(2s);
         std::this_thread::sleep_for(2s);
     });
 
-    std::thread signalSenderThread([&signal] { signal(); });
+    std::thread signalSenderThread([&batteryController] { batteryController.NotifyBatteryLow(); });
     signalSenderThread.detach();
 
     latch.arrive_and_wait();
+    // At this point we wait for a running emission.
+    
+    // disconnect during emission
     connection.disconnect();
 
-    // the connection blocks its destruction until all handler instances are destroyed.
+    // the connection blocks in its destruction until all handler instances are destroyed.
 }
