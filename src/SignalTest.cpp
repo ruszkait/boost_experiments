@@ -191,6 +191,10 @@ public:
 
     ~PostEmissionSafeConnection() { Release(); }
 
+    // The base class methods can be used
+    // disconnect(), connected(), blocked() etc.
+    // The only thing is: this class blocks at the destructor until all handlers are released
+
 private:
     // A shared counter, which tracks the living Trace instances
     // NOTE: This object is on the heap. This pins down its address, so the Trace-es can refer to it via
