@@ -193,15 +193,18 @@ public:
     PostEmissionSafeConnection() { }
 
     PostEmissionSafeConnection(
-        const boost::signals2::connection &connection, const std::shared_ptr<TraceCounter> &counter = {})
-        : scoped_connection(connection)
-        , counter_(counter)
+        boost::signals2::connection &&connection, std::unique_ptr<TraceCounter> counter = nullptr)
+        : scoped_connection(std::move(connection))
+        , counter_(std::move(counter))
     { }
 
     PostEmissionSafeConnection(const PostEmissionSafeConnection &) = delete;
     PostEmissionSafeConnection &operator=(const PostEmissionSafeConnection &) = delete;
 
-    PostEmissionSafeConnection(PostEmissionSafeConnection &&other) = default;
+    PostEmissionSafeConnection(PostEmissionSafeConnection &&other)
+        : scoped_connection(std::move(other))
+        , counter_(std::move(other.counter_))
+    { }
 
     PostEmissionSafeConnection &operator=(PostEmissionSafeConnection &&other)
     {
@@ -229,14 +232,14 @@ private:
         counter_.reset();
     }
 
-    std::shared_ptr<TraceCounter> counter_;
+    std::unique_ptr<TraceCounter> counter_;
 };
 
 struct Tracer
 {
     Tracer() = delete;
 
-    Tracer(std::shared_ptr<TraceCounter> counter)
+    Tracer(TraceCounter *counter)
         : counter_(counter)
     {
         counter_->RegisterTrace();
@@ -274,16 +277,8 @@ struct Tracer
             counter_->UnRegisterTrace();
     }
 
-    std::shared_ptr<TraceCounter> counter_;
+    TraceCounter *counter_;
 };
-
-auto DecorateWithTracer(const auto &callable)
-{
-    auto counter = std::make_shared<TraceCounter>();
-    auto trackedCallable = [tracker = Tracer(counter), callable] { callable(); };
-
-    return std::make_tuple(trackedCallable, counter);
-}
 
 class BatteryController
 {
@@ -295,8 +290,9 @@ public:
             return batteryLowSignal_.connect(handler);
         }
 
-        auto [trackedHandler, counter] = DecorateWithTracer(handler);
-        return {batteryLowSignal_.connect(std::move(trackedHandler)), counter};
+        auto counter = std::make_unique<TraceCounter>();
+        auto connection = batteryLowSignal_.connect([tracer = Tracer(counter.get()), handler] { handler(); });
+        return {std::move(connection), std::move(counter)};
     }
 
     void NotifyBatteryLow() { batteryLowSignal_(); }
