@@ -155,17 +155,47 @@ TEST(SignalTest, UnsubscribeInEmission)
 }
 
 #include <latch>
-#include <future>
 #include <thread>
 #include <chrono>
 #include <cassert>
+#include <condition_variable>
+
+struct TraceCounter
+{
+    void RegisterTrace()
+    {
+        std::lock_guard lock(mutex_);
+        traceCount_++;
+    }
+
+    void UnRegisterTrace()
+    {
+        std::lock_guard lock(mutex_);
+        traceCount_--;
+        if (traceCount_ == 0)
+            traceCountReached0Condition_.notify_one();
+    }
+
+    void WaitForLastHandlerTrace()
+    {
+        std::unique_lock lock(mutex_);
+        traceCountReached0Condition_.wait(lock, [this] { return traceCount_ == 0; });
+    }
+
+    std::mutex mutex_;
+    std::condition_variable traceCountReached0Condition_;
+    std::size_t traceCount_ = 0;
+};
 
 class PostEmissionSafeConnection : public boost::signals2::scoped_connection
 {
 public:
-    PostEmissionSafeConnection(std::weak_ptr<void> tracker, boost::signals2::connection connection)
-        : boost::signals2::scoped_connection(connection)
-        , tracker_(tracker)
+    PostEmissionSafeConnection() { }
+
+    PostEmissionSafeConnection(
+        const boost::signals2::connection &connection, const std::shared_ptr<TraceCounter> &counter)
+        : scoped_connection(connection)
+        , counter_(counter)
     { }
 
     PostEmissionSafeConnection(const PostEmissionSafeConnection &) = delete;
@@ -178,7 +208,7 @@ public:
         Release();
 
         boost::signals2::scoped_connection::operator=(std::move(other));
-        tracker_ = std::move(other.tracker_);
+        counter_ = std::move(other.counter_);
 
         return *this;
     }
@@ -192,38 +222,85 @@ public:
 private:
     void Release()
     {
-        while (!tracker_.expired())
-        {
-            using namespace std::literals;
-            std::this_thread::sleep_for(1ms);
-        }
+        if (!counter_)
+            return;
+
+        counter_->WaitForLastHandlerTrace();
+        counter_.reset();
     }
 
-    std::weak_ptr<void> tracker_;
+    std::shared_ptr<TraceCounter> counter_;
+};
+
+struct HandlerTrace
+{
+    HandlerTrace() = delete;
+
+    HandlerTrace(std::shared_ptr<TraceCounter> counter)
+        : counter_(counter)
+    {
+        counter_->RegisterTrace();
+    }
+
+    HandlerTrace(const HandlerTrace &other)
+        : counter_(other.counter_)
+    {
+        counter_->RegisterTrace();
+    }
+
+    HandlerTrace &operator=(const HandlerTrace &other)
+    {
+        counter_ = other.counter_;
+        counter_->RegisterTrace();
+        return *this;
+    }
+
+    HandlerTrace(HandlerTrace &&other)
+        : counter_(other.counter_)
+    {
+        other.counter_ = nullptr;
+    }
+
+    HandlerTrace &operator=(HandlerTrace &&other)
+    {
+        counter_ = other.counter_;
+        other.counter_ = nullptr;
+        return *this;
+    }
+
+    ~HandlerTrace()
+    {
+        if (counter_)
+            counter_->UnRegisterTrace();
+    }
+
+    std::shared_ptr<TraceCounter> counter_;
 };
 
 class BatteryController
 {
 public:
-    boost::signals2::scoped_connection OnBatteryLow(const std::function<void()> &handler)
+    PostEmissionSafeConnection OnBatteryLow(const std::function<void()> &handler, bool emissionSafe = false)
     {
-        auto connection = batteryLowSignal_.connect(handler);
-        return connection;
-    }
+        boost::signals2::connection connection;
+        std::shared_ptr<TraceCounter> counter;
 
-    PostEmissionSafeConnection OnBatteryLowSafe(const std::function<void()> &handler)
-    {
-        std::shared_ptr<void> tracker(nullptr, [](auto) {});
-        auto trackedHandler = [tracker, handler] { handler(); };
-        auto connection = batteryLowSignal_.connect(std::move(trackedHandler));
-        PostEmissionSafeConnection safeConnection(tracker, connection);
+        if (!emissionSafe)
+        {
+            connection = batteryLowSignal_.connect(handler);
+        }
+        else
+        {
+            counter = std::make_shared<TraceCounter>();
+            auto trackedHandler = [tracker = HandlerTrace(counter), handler] { handler(); };
+            connection = batteryLowSignal_.connect(std::move(trackedHandler));
+        }
+
+        PostEmissionSafeConnection safeConnection(connection, counter);
         return safeConnection;
     }
 
-    void NotifyBatteryLow()
-    {
-        batteryLowSignal_();
-    }
+    void NotifyBatteryLow() { batteryLowSignal_(); }
 
 private:
     boost::signals2::signal<void()> batteryLowSignal_;
@@ -234,19 +311,21 @@ TEST(SignalTest, PostUnsubscriptionEmission)
     BatteryController batteryController;
 
     std::latch latch(2);
-    PostEmissionSafeConnection connection = batteryController.OnBatteryLowSafe([&latch] {
-        latch.count_down();
-        using namespace std::literals;
-        std::this_thread::sleep_for(2s);
-        std::this_thread::sleep_for(2s);
-    });
+    PostEmissionSafeConnection connection = batteryController.OnBatteryLow(
+        [&latch] {
+            latch.count_down();
+            using namespace std::literals;
+            std::this_thread::sleep_for(2s);
+            std::this_thread::sleep_for(2s);
+        },
+        true);
 
     std::thread signalSenderThread([&batteryController] { batteryController.NotifyBatteryLow(); });
     signalSenderThread.detach();
 
     latch.arrive_and_wait();
     // At this point we wait for a running emission.
-    
+
     // disconnect during emission
     connection.disconnect();
 
