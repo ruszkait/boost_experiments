@@ -193,7 +193,7 @@ public:
     PostEmissionSafeConnection() { }
 
     PostEmissionSafeConnection(
-        const boost::signals2::connection &connection, const std::shared_ptr<TraceCounter> &counter)
+        const boost::signals2::connection &connection, const std::shared_ptr<TraceCounter> &counter = {})
         : scoped_connection(connection)
         , counter_(counter)
     { }
@@ -232,43 +232,43 @@ private:
     std::shared_ptr<TraceCounter> counter_;
 };
 
-struct HandlerTrace
+struct Tracer
 {
-    HandlerTrace() = delete;
+    Tracer() = delete;
 
-    HandlerTrace(std::shared_ptr<TraceCounter> counter)
+    Tracer(std::shared_ptr<TraceCounter> counter)
         : counter_(counter)
     {
         counter_->RegisterTrace();
     }
 
-    HandlerTrace(const HandlerTrace &other)
+    Tracer(const Tracer &other)
         : counter_(other.counter_)
     {
         counter_->RegisterTrace();
     }
 
-    HandlerTrace &operator=(const HandlerTrace &other)
+    Tracer &operator=(const Tracer &other)
     {
         counter_ = other.counter_;
         counter_->RegisterTrace();
         return *this;
     }
 
-    HandlerTrace(HandlerTrace &&other)
+    Tracer(Tracer &&other)
         : counter_(other.counter_)
     {
         other.counter_ = nullptr;
     }
 
-    HandlerTrace &operator=(HandlerTrace &&other)
+    Tracer &operator=(Tracer &&other)
     {
         counter_ = other.counter_;
         other.counter_ = nullptr;
         return *this;
     }
 
-    ~HandlerTrace()
+    ~Tracer()
     {
         if (counter_)
             counter_->UnRegisterTrace();
@@ -277,27 +277,26 @@ struct HandlerTrace
     std::shared_ptr<TraceCounter> counter_;
 };
 
+auto DecorateWithTracer(const auto &callable)
+{
+    auto counter = std::make_shared<TraceCounter>();
+    auto trackedCallable = [tracker = Tracer(counter), callable] { callable(); };
+
+    return std::make_tuple(trackedCallable, counter);
+}
+
 class BatteryController
 {
 public:
     PostEmissionSafeConnection OnBatteryLow(const std::function<void()> &handler, bool emissionSafe = false)
     {
-        boost::signals2::connection connection;
-        std::shared_ptr<TraceCounter> counter;
-
         if (!emissionSafe)
         {
-            connection = batteryLowSignal_.connect(handler);
-        }
-        else
-        {
-            counter = std::make_shared<TraceCounter>();
-            auto trackedHandler = [tracker = HandlerTrace(counter), handler] { handler(); };
-            connection = batteryLowSignal_.connect(std::move(trackedHandler));
+            return batteryLowSignal_.connect(handler);
         }
 
-        PostEmissionSafeConnection safeConnection(connection, counter);
-        return safeConnection;
+        auto [trackedHandler, counter] = DecorateWithTracer(handler);
+        return {batteryLowSignal_.connect(std::move(trackedHandler)), counter};
     }
 
     void NotifyBatteryLow() { batteryLowSignal_(); }
