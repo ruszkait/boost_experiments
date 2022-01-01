@@ -283,16 +283,16 @@ struct Tracer
 class BatteryController
 {
 public:
-    PostEmissionSafeConnection OnBatteryLow(const std::function<void()> &handler, bool emissionSafe = false)
+    PostEmissionSafeConnection OnBatteryLow(
+        const std::function<void()> &handler, std::unique_ptr<TraceCounter> trackerCounter = {})
     {
-        if (!emissionSafe)
+        if (!trackerCounter)
         {
             return batteryLowSignal_.connect(handler);
         }
 
-        auto counter = std::make_unique<TraceCounter>();
-        auto connection = batteryLowSignal_.connect([tracer = Tracer(counter.get()), handler] { handler(); });
-        return {std::move(connection), std::move(counter)};
+        auto connection = batteryLowSignal_.connect([tracer = Tracer(trackerCounter.get()), handler] { handler(); });
+        return {std::move(connection), std::move(trackerCounter)};
     }
 
     void NotifyBatteryLow() { batteryLowSignal_(); }
@@ -313,7 +313,7 @@ TEST(SignalTest, PostUnsubscriptionEmission)
             std::this_thread::sleep_for(2s);
             std::this_thread::sleep_for(2s);
         },
-        true);
+        std::make_unique<TraceCounter>());
 
     std::thread signalSenderThread([&batteryController] { batteryController.NotifyBatteryLow(); });
     signalSenderThread.detach();
