@@ -187,14 +187,14 @@ struct TraceCounter
     std::size_t traceCount_ = 0;
 };
 
-class PostEmissionSafeConnection : public boost::signals2::scoped_connection
+class PostEmissionSafeConnection : public boost::signals2::connection
 {
 public:
     PostEmissionSafeConnection() { }
 
     PostEmissionSafeConnection(
         boost::signals2::connection &&connection, std::unique_ptr<TraceCounter> counter = nullptr)
-        : scoped_connection(std::move(connection))
+        : boost::signals2::connection(std::move(connection))
         , counter_(std::move(counter))
     { }
 
@@ -202,21 +202,25 @@ public:
     PostEmissionSafeConnection &operator=(const PostEmissionSafeConnection &) = delete;
 
     PostEmissionSafeConnection(PostEmissionSafeConnection &&other)
-        : scoped_connection(std::move(other))
+        : boost::signals2::connection(std::move(other))
         , counter_(std::move(other.counter_))
     { }
 
     PostEmissionSafeConnection &operator=(PostEmissionSafeConnection &&other)
     {
-        boost::signals2::scoped_connection::operator=(std::move(other));
+        boost::signals2::connection::operator=(std::move(other));
         counter_ = std::move(other.counter_);
 
         return *this;
     }
 
-    // The base class methods can be used
-    // disconnect(), connected(), blocked() etc.
-    // The only thing is: this class blocks at the destructor until all handlers are released
+    ~PostEmissionSafeConnection() { Release(); }
+
+    void Release()
+    {
+        disconnect();
+        counter_.reset();
+    }
 
 private:
     std::unique_ptr<TraceCounter> counter_;
@@ -292,24 +296,31 @@ TEST(SignalTest, PostUnsubscriptionEmission)
 {
     BatteryController batteryController;
 
-    std::latch latch(2);
+    std::latch emissionBegin(1);
+    std::latch handlerDisconnected(1);
+    std::latch emissionFinished(1);
+
     PostEmissionSafeConnection connection = batteryController.OnBatteryLow(
-        [&latch] {
-            latch.count_down();
-            using namespace std::literals;
-            std::this_thread::sleep_for(2s);
-            std::this_thread::sleep_for(2s);
+        [&emissionBegin, &handlerDisconnected] {
+            emissionBegin.count_down();
+            handlerDisconnected.wait();
         },
         std::make_unique<TraceCounter>());
 
-    std::thread signalSenderThread([&batteryController] { batteryController.NotifyBatteryLow(); });
-    signalSenderThread.detach();
+    std::jthread signalSenderThread([&batteryController, &emissionFinished] {
+        batteryController.NotifyBatteryLow();
+        emissionFinished.count_down();
+    });
 
-    latch.arrive_and_wait();
     // At this point we wait for a running emission.
+    emissionBegin.wait();
 
-    // disconnect during emission
+    // Disconnect during emission
+    // It releases the signal slots, except the one that is held by the emission
     connection.disconnect();
+    handlerDisconnected.count_down();
 
-    // the connection blocks in its destruction until all handler instances are destroyed.
+    // Block as long as the emission is running and holding the last slot
+    connection.Release();
+    ASSERT_THAT(emissionFinished.try_wait(), true);
 }

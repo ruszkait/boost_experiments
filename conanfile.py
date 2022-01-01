@@ -2,7 +2,7 @@ import re, os
 from conans import ConanFile, CMake, tools
 
 class SensorDataPackage(ConanFile):
-    name = 'boost_signal_experiments'
+    name = 'boostTest'
 
     build_policy = 'never'
     generators = "cmake_find_package"

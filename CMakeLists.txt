@@ -9,14 +9,12 @@ list(APPEND CMAKE_PREFIX_PATH ${CMAKE_BINARY_DIR})
 set( CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/out CACHE STRING "" )
 set( CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/out CACHE STRING "" )
 
-
-set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_EXTENSIONS OFF)
-
 find_package(Boost REQUIRED)
-find_package(Gtest)
+find_package(Gtest REQUIRED)
 
 add_executable(${PROJECT_NAME})
+
+target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_20)
 
 target_sources(${PROJECT_NAME}
 	PRIVATE
