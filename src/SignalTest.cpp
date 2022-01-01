@@ -162,6 +162,12 @@ TEST(SignalTest, UnsubscribeInEmission)
 
 struct TraceCounter
 {
+    ~TraceCounter()
+    {
+        std::unique_lock lock(mutex_);
+        traceCountReached0Condition_.wait(lock, [this] { return traceCount_ == 0; });
+    }
+
     void RegisterTrace()
     {
         std::lock_guard lock(mutex_);
@@ -174,12 +180,6 @@ struct TraceCounter
         traceCount_--;
         if (traceCount_ == 0)
             traceCountReached0Condition_.notify_one();
-    }
-
-    void WaitForLastHandlerTrace()
-    {
-        std::unique_lock lock(mutex_);
-        traceCountReached0Condition_.wait(lock, [this] { return traceCount_ == 0; });
     }
 
     std::mutex mutex_;
@@ -208,30 +208,17 @@ public:
 
     PostEmissionSafeConnection &operator=(PostEmissionSafeConnection &&other)
     {
-        Release();
-
         boost::signals2::scoped_connection::operator=(std::move(other));
         counter_ = std::move(other.counter_);
 
         return *this;
     }
 
-    ~PostEmissionSafeConnection() { Release(); }
-
     // The base class methods can be used
     // disconnect(), connected(), blocked() etc.
     // The only thing is: this class blocks at the destructor until all handlers are released
 
 private:
-    void Release()
-    {
-        if (!counter_)
-            return;
-
-        counter_->WaitForLastHandlerTrace();
-        counter_.reset();
-    }
-
     std::unique_ptr<TraceCounter> counter_;
 };
 
